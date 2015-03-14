@@ -1035,10 +1035,10 @@ public final class SAXFactory {
      * @return sub-series from start to end.
      */
     private static double[] getSubSeries(Instances data, Attribute attribute, int start, int end) {
-        List<Instance> tmpList = data.subList(start, end);
+        Instances subList = new Instances(data, start, end - start);
         double[] vals = new double[end - start];
         for (int i = 0; i < end - start; i++) {
-            vals[i] = tmpList.get(i).value(attribute.index());
+            vals[i] = subList.instance(i).value(attribute.index());
         }
         return vals;
     }
@@ -1051,9 +1051,9 @@ public final class SAXFactory {
      * @return real-valued array.
      */
     public static double[] toRealSeries(Instances tsData, Attribute dataAttribute) {
-        double[] vals = new double[tsData.size()];
-        for (int i = 0; i < tsData.size(); i++) {
-            vals[i] = tsData.get(i).value(dataAttribute.index());
+        double[] vals = new double[tsData.numInstances()];
+        for (int i = 0; i < tsData.numInstances(); i++) {
+            vals[i] = tsData.instance(i).value(dataAttribute.index());
         }
         return vals;
     }
@@ -1101,7 +1101,7 @@ public final class SAXFactory {
         // entries
         //
         int currPosition = 0;
-        while ((currPosition + window) < tsData.size()) {
+        while ((currPosition + window) < tsData.numInstances()) {
 
             double[] vals = getSubSeries(tsData, dataAttribute, currPosition, currPosition + window);
 

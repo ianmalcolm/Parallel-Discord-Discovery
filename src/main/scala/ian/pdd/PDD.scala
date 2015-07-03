@@ -8,7 +8,8 @@ import org.junit.Assert._
 import java.util.ArrayList
 import org.apache.log4j.Logger
 import org.apache.log4j.Level
-
+import scala.collection.JavaConversions._
+import scala.collection.mutable.MutableList
 import ian.ISAXIndex._
 
 /**
@@ -16,12 +17,14 @@ import ian.ISAXIndex._
  */
 object PDD {
 
+  val ABANDON = Long.MinValue
+
   def main(args: Array[String]) {
     val appName = "Parallel Discord Discovery"
     val master = "local[4]"
     val inputfile = "C:/users/ian/github/datasets/testdata1e5.txt"
     val windowSize = 10
-    val partitionSize = 10
+    val partitionSize = 4
     val conf = new SparkConf().setAppName(appName).setMaster(master)
     val sc = new SparkContext(conf)
     val mean = 0.5
@@ -35,73 +38,138 @@ object PDD {
       .toArray
       .map(_.toDouble)
 
+    val partitioner = new ExactPartitioner(partitionSize, ts.length - windowSize + 1)
     val bcseqs = sc.broadcast(ts)
 
     val dh = new DataOfBroadcast(bcseqs, windowSize, mean, std);
 
-    var indices = sc.parallelize(ts)
+    val indices = sc.parallelize(ts)
       .sliding(windowSize)
       .zipWithIndex()
       .map { case (k, v) => (v, k) }
-      .partitionBy(new ExactPartitioner(partitionSize, ts.length - windowSize + 1))
+      .partitionBy(partitioner)
       .mapPartitions((new CreateIndex(dh)).call, false)
-      .repartition(partitionSize)
 
-    indices.persist()
+    //    val freqs = indices.map { _.leafIterator().toArray }
+    //      .flatMap { x => x }
+    //      .map { x => (x.getLoad, x.numChildren()) }
+    //      .reduceByKey(_ + _)
+    //      .sortBy(_._2)
+    //      .map { case (k, v) => k }
+    //      .collect
 
-    var gBSFDiscord = new Sequence(Double.NegativeInfinity, false)
-    var cnt = 0
-    var progress = Long.MaxValue
+    val freqs = indices.map { _.leafIterator().toArray }
+      .flatMap { x => x }
+      .map { x => (x.getLoad, x.numChildren()) }
+      .reduceByKey(_ + _)
+      .sortBy(_._2)
+      .collect
 
-    do {
-      val localDiscord = indices.filter { x => !x.isAbandon() }
-        .map { new Detection(dh, gBSFDiscord.dist).detect }
-        .map { x => x.asInstanceOf[java.lang.Long] }
-        .filter { x => x >= 0 && x < dh.size() }
-        .collect()
+    var gBSFDiscord = new Sequence(ABANDON, ABANDON, Double.NegativeInfinity, false)
+    var skipList: List[Long] = List()
 
-      //      val tempSeqs = indices.map { new GlobNNSearch(dh, localDiscord).search }
-      //        .flatMap { x => x }
-      //
-      //      for (tempSeq <- tempSeqs.collect()) {
-      //        //        println(tempSeq.toString())
-      //      }
-      //    } while (false)
+    var numCnt = 0
+    var words = MutableList[String]()
+    val batch = 1000
 
-      val globNNSeq = indices.map { new GlobNNSearch(dh, localDiscord).search }
-        .flatMap { x => x }
-        .map { x => (x.id, x) }
-        .reduceByKey{(x, y) => (if (x.dist < y.dist) x else y)}
-        .map { case (k, v) => (v) }
+    for (freq <- freqs) {
+      words ++= List(freq._1)
+      numCnt += freq._2
+      if (numCnt >= batch) {
 
-      indices.filter { x => !x.isAbandon() }
-        .foreach { new Correction(dh, globNNSeq.collect).correct }
+        val occus = indices.map { _.getOccurences(words.toArray) }
+          .flatMap { x => x }
+          .collect()
+          .filter(x => !skipList.contains(x))
 
-      val curDiscord = globNNSeq.reduce((x, y) => (if (x.dist > y.dist) x else y))
+        val discord = indices.map { new LocalNNSearch(dh, occus, gBSFDiscord.dist).search }
+          .flatMap { x => x }
+          .map(x => (x.id, x))
+          .reduceByKey((x, y) => (if (x.dist < y.dist) x else y))
+          .map(x => x._2)
+          .reduce((x, y) => (if (x.dist > y.dist) x else y))
 
-      cnt = cnt + 1
+        println("numSeqs " + occus.size + "\tID " + discord.id + "\tneighbor " + discord.neighbor + "\tdist " + discord.dist)
 
-      if (gBSFDiscord.dist < curDiscord.dist) {
-        gBSFDiscord = curDiscord
+        if (gBSFDiscord.dist < discord.dist) {
+          gBSFDiscord = discord
+          val newSkips = indices.map { new Filtering(dh, gBSFDiscord.dist).filter }
+            .flatMap { x => x }
+            .map { x => x.asInstanceOf[scala.Long] }
+            .collect
+          skipList = skipList ++ newSkips
+          println("\t\tnumSkips " + skipList.size + "\tBSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
+        }
+
+        numCnt = 0
+        words = MutableList[String]()
       }
 
-      progress = indices.filter { x => !x.isAbandon() }
-        .map { x => x.cntRefineReq(gBSFDiscord.dist) }.reduce(_ + _)
-      //      println(progress)
-      println(cnt + "\t" + progress + "\t" + indices.filter { x => !x.isAbandon() }.count + "\t" + gBSFDiscord.id + "\t" + gBSFDiscord.neighbor + "\t" + gBSFDiscord.dist)
+    }
 
-    } while (progress > 0)
+    //    for (word <- freqs) {
+    //
+    //      val occus = indices.map { _.getOccurence(word) }
+    //        .filter { x => x != null }
+    //        .flatMap { x => x }
+    //        .collect()
+    //        .filter(x => !skipList.contains(x))
+    //
+    //      println("Word: " + word + "\tnumOccurences " + occus.size)
+    //
+    //      if (occus.size > 0) {
+    //        val discord = indices.map { new LocalNNSearch(dh, occus).search }
+    //          .flatMap { x => x }
+    //          .map(x => (x.id, x))
+    //          .reduceByKey((x, y) => (if (x.dist < y.dist) x else y))
+    //          .map(x => x._2)
+    //          .reduce((x, y) => (if (x.dist > y.dist) x else y))
+    //
+    //        println("\tID " + discord.id + "\tneighbor " + discord.neighbor + "\tdist " + discord.dist)
+    //        if (gBSFDiscord.dist < discord.dist) {
+    //          gBSFDiscord = discord
+    //          val newSkips = indices.map { new Filtering(dh, gBSFDiscord.dist).filter }
+    //            .flatMap { x => x }
+    //            .map { x => x.asInstanceOf[scala.Long] }
+    //            .collect
+    //          skipList = skipList ++ newSkips
+    //          println("\t\tnumSkips " + skipList.size + "\tBSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
+    //        }
+    //      }
+    //    }
+
+    //    for (word <- freqs) {
+    //
+    //      val _occus = indices.map { _.getOccurence(word) }
+    //        .filter { x => x != null }
+    //      val occus = _occus.flatMap { x => x }
+    //        .collect()
+    //
+    //      println("Word: " + word + "\tnumPartitions " + _occus.count() + "\tnumOccurences " + occus.size)
+    //      
+    //      for (occu <- occus) {
+    //
+    //        if (!skipList.contains(occu)) {
+    //          val discord = indices.map { new LocalNNSearch(dh, Array(occu)).search }
+    //            .flatMap { x => x }
+    //            .reduce((x, y) => (if (x.dist < y.dist) x else y))
+    //          println("\tID " + discord.id + "\tneighbor " + discord.neighbor + "\tdist " + discord.dist)
+    //          if (gBSFDiscord.dist < discord.dist) {
+    //            gBSFDiscord = discord
+    //            //            val newSkips = indices.map { new Filtering(dh, gBSFDiscord.dist).filter }
+    //            //              .flatMap { x => x }
+    //            //              .map { x => x.asInstanceOf[scala.Long] }
+    //            //              .collect
+    //            //            skipList = skipList ++ newSkips
+    //            println("\t\tnumSkips " + skipList.size + "\tBSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
+    //          }
+    //        }
+    //      }
+    //
+    //    }
 
   }
 
-  def IsEndOfDiscovery(_gBSFDist: Double, _seqs: RDD[Index]): Boolean = {
-    _seqs.map(x => (x.cntRefineReq(_gBSFDist))).count() == 0
-  }
-
-  def readFile(filename: String): Array[Double] = {
-    val in = scala.io.Source.fromFile(filename).getLines().toArray.map(x => x.toDouble)
-    in
-  }
 }
 
 class CreateIndex(_dh: DataOfBroadcast) extends java.io.Serializable {
@@ -111,29 +179,10 @@ class CreateIndex(_dh: DataOfBroadcast) extends java.io.Serializable {
 
   def call(seqsIter: Iterator[(Long, Array[Double])]): Iterator[Index] = {
 
-    //    val i = seqsIter.map { case (k, v) => k }.size
-    //    val j = seqsIter.map { case (k, v) => k }.size
-    //    println("Sequence range: " + i + "\t" + j)
-
     while (seqsIter.hasNext) {
       val seq = seqsIter.next()
       index.add(dh.getViaIterator(seq._2), seq._1)
-      index.addMemo(seq._1)
     }
-
-    //    { // search local nearest neighbor
-    //      val selfExcept: ArrayList[java.lang.Long] = new ArrayList[java.lang.Long]()
-    //      val i = 41491
-    //      for (
-    //        overlap <- i - dh.windowSize() + 1 until i
-    //          + dh.windowSize()
-    //      ) {
-    //        selfExcept.add(overlap);
-    //      }
-    //      val knn = index.knn(dh.get(i), 1, dh, selfExcept)
-    //      System.out.println(i + "\t" + knn.get(0) + "\t"
-    //        + index.df.distance(dh.get(i), dh.get(knn.get(0))));
-    //    }
 
     val indexlist = List(index)
     indexlist.iterator

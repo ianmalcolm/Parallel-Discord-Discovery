@@ -4,12 +4,13 @@ import java.util.ArrayList;
 
 import org.junit.Assert;
 
-public class GlobNNSearch implements java.io.Serializable {
+public class LocalNNSearch implements java.io.Serializable {
 
 	private final DataOfBroadcast dh;
 	private final Long[] localDiscord;
+	private final double range;
 
-	public GlobNNSearch(DataOfBroadcast _dh, Long[] _ld) {
+	public LocalNNSearch(DataOfBroadcast _dh, Long[] _ld, double _range) {
 		// TODO Auto-generated constructor stub
 		dh = _dh;
 		localDiscord = _ld;
@@ -18,6 +19,7 @@ public class GlobNNSearch implements java.io.Serializable {
 					"Engaging invalid sequence in GlobNNSearch phase!", ld >= 0
 							&& ld < dh.size());
 		}
+		range=_range;
 	}
 
 	public Sequence[] search(Index index) {
@@ -40,7 +42,7 @@ public class GlobNNSearch implements java.io.Serializable {
 				selfExcept.add(overlap);
 			}
 
-			ArrayList<Long> knn = index.knn(dh.get(i), 1, dh, selfExcept);
+			ArrayList<Long> knn = index.knn(dh.get(i), 1, dh, selfExcept,range);
 			result[num++] = new Sequence(i, knn.get(0), index.df.distance(
 					dh.get(i), dh.get(knn.get(0))), false);
 //			System.out.println(result[num - 1].toString());

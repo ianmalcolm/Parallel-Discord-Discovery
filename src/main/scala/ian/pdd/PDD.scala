@@ -1,57 +1,180 @@
 package ian.pdd
 
+import org.apache.log4j.Logger
+import org.apache.log4j.Level
+import org.apache.log4j.LogManager
+import org.apache.commons.cli.BasicParser
+import org.apache.commons.cli.CommandLine
+import org.apache.commons.cli.CommandLineParser
+import org.apache.commons.cli.HelpFormatter
+import org.apache.commons.cli.Options
+import org.apache.commons.cli.ParseException
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd._
 import org.apache.spark.mllib.rdd.RDDFunctions._
-import org.junit.Assert._
-import java.util.ArrayList
-import org.apache.log4j.Logger
-import org.apache.log4j.Level
+
 import scala.collection.JavaConversions._
 import scala.collection.mutable
 import ian.ISAXIndex._
 import java.util.Date
+import java.util.ArrayList
 
 /**
  * @author ${user.name}
  */
 object PDD {
 
+  val logger = Logger.getLogger(getClass.getName)
+
   def main(args: Array[String]) {
-    val appName = "Parallel Discord Discovery"
-    val master = "local[4]"
-    val inputfile = "C:/users/ian/github/datasets/testdata1e5.txt"
-    val windowSize = 10
-    val partitionSize = 4
-    val conf = new SparkConf().setAppName(appName).setMaster(master)
-    val sc = new SparkContext(conf)
-    val mean = 0.5
-    val std = 0.289
-
-    Logger.getLogger("org").setLevel(Level.ERROR)
-    Logger.getLogger("akka").setLevel(Level.ERROR)
-
-    val ts = scala.io.Source.fromFile(inputfile)
-      .getLines()
-      .toArray
-      .map(_.toDouble)
-    val bcseqs = sc.broadcast(ts)
-    val dh = new DataOfBroadcast(bcseqs, windowSize, mean, std);
 
     val start = new Date();
 
-    val discords = pdd(sc.parallelize(ts), windowSize, partitionSize, dh, sc)
+    val appName = "Parallel Discord Discovery"
+    var master = ""
+    var FILE = ""
+    var SLIDING_WINDOW_SIZE = 100
+    var PARTITION_SIZE = 4
+    var OFFSET = 0
+    var LENGTH = -1
+    var BATCH = 1000
+    var REPORT_NUM = 1
+    var conf = new SparkConf().setAppName(appName)
+
+    if (args.length > 0) {
+      val options = new Options();
+      options.addOption("fil", true, "The file name of the dataset");
+      options.addOption("ofs", true, "Set the offset of the dataset, defalut is 0");
+      options.addOption("len", true, "Set the length of dataset, -1 for using the entire dataset, default is -1");
+      options.addOption("win", true, "The size of sliding window");
+      options.addOption("par", true, "The size of partition");
+      options.addOption("bat", true, "The size of batch");
+      options.addOption("rep", true, "The number of reported discords");
+      options.addOption("mst", true, "The configuration of master");
+      options.addOption("log", true, "The log level");
+      options.addOption("h", false, "Print help message");
+
+      val parser: CommandLineParser = new BasicParser();
+      val cmd: CommandLine = parser.parse(options, args);
+
+      if (cmd.hasOption("h")) {
+        val formatter: HelpFormatter = new HelpFormatter();
+        formatter.printHelp("HOTSAX", options);
+        return ;
+      }
+      if (cmd.hasOption("fil")) {
+        FILE = cmd.getOptionValue("fil");
+      }
+      if (cmd.hasOption("ofs")) {
+        OFFSET = Integer.parseInt(cmd.getOptionValue("ofs"));
+      }
+      if (cmd.hasOption("len")) {
+        LENGTH = Integer.parseInt(cmd.getOptionValue("len"));
+      }
+      if (cmd.hasOption("win")) {
+        SLIDING_WINDOW_SIZE = Integer.parseInt(cmd.getOptionValue("win"));
+      }
+      if (cmd.hasOption("par")) {
+        PARTITION_SIZE = Integer.parseInt(cmd.getOptionValue("par"));
+      }
+      if (cmd.hasOption("bat")) {
+        BATCH = Integer.parseInt(cmd.getOptionValue("bat"));
+      }
+      if (cmd.hasOption("rep")) {
+        REPORT_NUM = Integer.parseInt(cmd.getOptionValue("rep"));
+      }
+      if (cmd.hasOption("mst")) {
+        val MASTER = cmd.getOptionValue("mst");
+        conf = conf.setMaster(MASTER)
+      }
+      if (cmd.hasOption("log")) {
+        if (cmd.getOptionValue("log").equalsIgnoreCase("OFF")) {
+          LogManager.getRootLogger().setLevel(Level.OFF)
+        } else if (cmd.getOptionValue("log").equalsIgnoreCase("FATAL")) {
+          LogManager.getRootLogger().setLevel(Level.FATAL)
+        } else if (cmd.getOptionValue("log").equalsIgnoreCase("ERROR")) {
+          LogManager.getRootLogger().setLevel(Level.ERROR)
+        } else if (cmd.getOptionValue("log").equalsIgnoreCase("WARN")) {
+          LogManager.getRootLogger().setLevel(Level.WARN)
+        } else if (cmd.getOptionValue("log").equalsIgnoreCase("INFO")) {
+          LogManager.getRootLogger().setLevel(Level.INFO)
+        } else if (cmd.getOptionValue("log").equalsIgnoreCase("DEBUG")) {
+          LogManager.getRootLogger().setLevel(Level.DEBUG)
+        } else if (cmd.getOptionValue("log").equalsIgnoreCase("TRACE")) {
+          LogManager.getRootLogger().setLevel(Level.TRACE)
+        } else if (cmd.getOptionValue("log").equalsIgnoreCase("ALL")) {
+          LogManager.getRootLogger().setLevel(Level.ALL)
+        }
+      }
+
+      println("-fil " + FILE
+        + " -ofs " + OFFSET
+        + " -len " + LENGTH
+        + " -win " + SLIDING_WINDOW_SIZE
+        + " -par " + PARTITION_SIZE
+        + " -bat " + BATCH
+        + " -rep " + REPORT_NUM
+        + (if (cmd.hasOption("mst")) " -mst " + cmd.getOptionValue("mst") else ""));
+    }
+
+    Logger.getLogger("org").setLevel(Level.WARN)
+    Logger.getLogger("akka").setLevel(Level.WARN)
+
+    val sc = new SparkContext(conf)
+
+    var ts: Array[Double] = Array()
+    if (LENGTH > 0) {
+      ts = Array.ofDim[Double](LENGTH)
+      var i = 0;
+      var ofsCnt = 1;
+      val iter = scala.io.Source.fromFile(FILE).getLines()
+      while (ofsCnt < OFFSET) {
+        ofsCnt += 1
+        if (iter.hasNext) {
+          val line = iter.next()
+        } else {
+          System.out.println("Not enough lines in " + FILE);
+          exit
+        }
+      }
+      while (i < LENGTH) {
+        if (iter.hasNext) {
+          ts(i) = iter.next().toDouble
+        } else {
+          System.out.println("Not enough lines in " + FILE);
+          exit
+        }
+        i += 1
+      }
+    } else {
+      ts = scala.io.Source.fromFile(FILE)
+        .getLines()
+        .toArray
+        .map(_.toDouble)
+    }
+
+    val bcseqs = sc.broadcast(ts)
+    val dh = new DataOfBroadcast(bcseqs, SLIDING_WINDOW_SIZE)
+
+    val discords = pdd(sc.parallelize(ts), SLIDING_WINDOW_SIZE, PARTITION_SIZE, dh, sc, REPORT_NUM, BATCH)
 
     val end = new Date();
 
     for (seq <- discords) {
-      println("\t\tBSFDiscord: " + seq.id + "\tdist: " + seq.dist)
+      println("Top Discord: " + seq.id + "\tdist: " + seq.dist)
     }
     println("Total time elapsed: " + (end.getTime() - start.getTime()) / 1000);
+
   }
 
-  def pdd(inputData: RDD[Double], winSize: Int, partSize: Int, dh: DataOfBroadcast, sc: SparkContext): Array[Sequence] = {
+  def pdd(inputData: RDD[Double],
+          winSize: Int,
+          partSize: Int,
+          dh: DataOfBroadcast,
+          sc: SparkContext,
+          reportNum: Int,
+          batch: Int): Array[Sequence] = {
 
     val partitioner = new ExactPartitioner(partSize, inputData.count - winSize + 1)
     val bcseqs = sc.broadcast(inputData)
@@ -65,8 +188,6 @@ object PDD {
       .partitionBy(partitioner)
       .mapPartitions(ci.call, false)
 
-    val batch = 1000
-
     val chunk = indices.map { _.leafIterator().toArray }
       .flatMap { x => x }
       .map { x => (x.getLoad, x.getIDList.toArray) }
@@ -76,7 +197,7 @@ object PDD {
       .flatMap { x => x }
       .map(_.asInstanceOf[Long])
       .zipWithIndex()
-      .filter(_._2 < batch)
+      .filter(_._2 < 1000)
       .map(_._1.asInstanceOf[java.lang.Long])
       .collect
 
@@ -90,10 +211,10 @@ object PDD {
       .map(x => x._2)
       .reduce((x, y) => (if (x.dist > y.dist) x else y))
 
-    println("Estimated Seqs: " + chunk.size + "\tID: " + discord.id + "\tNeighbor: " + discord.neighbor + "\tDist: " + discord.dist)
+    logger.warn("Estimated Seqs: " + chunk.size + "\tID: " + discord.id + "\tNeighbor: " + discord.neighbor + "\tDist: " + discord.dist)
 
     var gBSFDiscord: Sequence = discord
-    println("\t\tBSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
+    logger.warn("\t\tBSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
 
     var q = sc.parallelize(new Array[NNSearch](partSize))
       .map { x => new NNSearch(dh, new Array[java.lang.Long](0), gBSFDiscord.dist, partSize, batch) }
@@ -131,7 +252,7 @@ object PDD {
           .map { _._1 }
       }
 
-      //      println("Before:\t" + q.map(_._2.numDiscord()).collect().mkString("\t"))
+      logger.info("Before:\t" + q.map(_._2.numSeqs()).collect().mkString("\t"))
 
       // detect discord from each chunks of q
       val opandres = indices.zipWithIndex()
@@ -139,7 +260,7 @@ object PDD {
         .rightOuterJoin(q)
         .map(x => discovery(x._1, x._2._1.get, x._2._2))
 
-      //      println("After:\t" + q.map(_._2.numDiscord()).collect().mkString("\t"))
+      //      logger.debug("After:\t" + q.map(_._2.numSeqs()).collect().mkString("\t"))
 
       val tempResult = opandres.map(_._2)
         .filter { _.size > 0 }
@@ -151,14 +272,14 @@ object PDD {
           .flatMap { x => x }
           .reduce((x, y) => (if (x.dist > y.dist) x else y))
 
-        println("ID: " + discord.id + "\tNeighbor: " + discord.neighbor + "\tDist: " + discord.dist)
+        logger.warn("ID: " + discord.id + "\tNeighbor: " + discord.neighbor + "\tDist: " + discord.dist)
 
         // update best so far distance
         if (gBSFDiscord.dist < discord.dist) {
           gBSFDiscord = discord
           q = q.map(x => (gBSFDiscord.dist, x))
             .map(x => updateQWithRange(x._2._1, x._2._2, x._1))
-          println("\t\tBSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
+          logger.warn("BSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
         }
       }
 
@@ -166,15 +287,17 @@ object PDD {
       q = q.map(x => ((x._1 + 1) % partSize, x._2))
         .sortBy(_._1)
 
-      assertTrue("The size of the queue is " + q.count() + ", which is not the same as partitionSize", q.count() == partSize)
+      assert(q.count() == partSize, "The size of the queue is " + q.count() + ", which is not the same as partitionSize")
 
       numSeqsInQ = q.map(_._2.numSeqs())
         .reduce(_ + _)
       numSeqsInList = list.count
 
-      println("numSeqs:\t" + (numSeqsInQ + numSeqsInList) + "\t numRemainings:\t" + q.map(_._2.numSeqs()).collect().mkString("\t"))
+      logger.info("numSeqs:\t" + (numSeqsInQ + numSeqsInList) + "\t numRemainings:\t" + q.map(_._2.numSeqs()).collect().mkString("\t"))
     }
 
+    val numCalls = indices.map { x => x.df.getCount }.reduce(_ + _)
+    logger.warn("Number of calls to distance function: " + numCalls)
     Array[Sequence](gBSFDiscord)
 
   }
@@ -197,9 +320,8 @@ object PDD {
 }
 
 class CreateIndex(_dh: DataOfBroadcast) extends java.io.Serializable {
-  val df = new ED()
   val dh = _dh
-  val index = new Index(8, 4, df)
+  val index = new Index(8, 4)
 
   def call(seqsIter: Iterator[(Long, Array[Double])]): Iterator[Index] = {
 

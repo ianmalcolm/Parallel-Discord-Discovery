@@ -3,6 +3,9 @@ package ian.pdd;
 import java.util.HashSet;
 
 class Sequence implements java.io.Serializable {
+	/**
+	 * 
+	 */
 	final long id;
 	double dist = Double.POSITIVE_INFINITY;
 	long neighbor = Long.MIN_VALUE;

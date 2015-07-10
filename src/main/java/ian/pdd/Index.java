@@ -1,17 +1,13 @@
 package ian.pdd;
 
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
 import java.util.Iterator;
-import java.util.Map;
-
 import ian.ISAXIndex.*;
 
 public class Index extends ISAXIndex implements java.io.Serializable {
 
-	public Index(int maxCardinality, int dimensionality, Distance _df) {
-		super(maxCardinality, dimensionality, _df);
+	public Index(int maxCardinality, int dimensionality) {
+		super(maxCardinality, dimensionality, new ED());
 		// TODO Auto-generated constructor stub
 
 	}

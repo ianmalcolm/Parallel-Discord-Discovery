@@ -1,11 +1,6 @@
 package ian.pdd;
 
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Set;
-
-import org.junit.Assert;
 
 public class NNSearch implements java.io.Serializable {
 

@@ -40,6 +40,7 @@ object PDD {
     var LENGTH = -1
     var BATCH = 1000
     var REPORT_NUM = 1
+    var ESTIMATION = 1000
     var conf = new SparkConf().setAppName(appName)
 
     if (args.length > 0) {
@@ -51,6 +52,7 @@ object PDD {
       options.addOption("par", true, "The size of partition");
       options.addOption("bat", true, "The size of batch");
       options.addOption("rep", true, "The number of reported discords");
+      options.addOption("est", true, "The number of seqs involved in estimation");
       options.addOption("mst", true, "The configuration of master");
       options.addOption("log", true, "The log level");
       options.addOption("h", false, "Print help message");
@@ -84,6 +86,9 @@ object PDD {
       if (cmd.hasOption("rep")) {
         REPORT_NUM = Integer.parseInt(cmd.getOptionValue("rep"));
       }
+      if (cmd.hasOption("est")) {
+        ESTIMATION = Integer.parseInt(cmd.getOptionValue("est"));
+      }
       if (cmd.hasOption("mst")) {
         val MASTER = cmd.getOptionValue("mst");
         conf = conf.setMaster(MASTER)
@@ -114,6 +119,7 @@ object PDD {
         + " -win " + SLIDING_WINDOW_SIZE
         + " -par " + PARTITION_SIZE
         + " -bat " + BATCH
+        + " -est " + ESTIMATION
         + " -rep " + REPORT_NUM
         + (if (cmd.hasOption("mst")) " -mst " + cmd.getOptionValue("mst") else ""));
     }
@@ -123,41 +129,21 @@ object PDD {
 
     val sc = new SparkContext(conf)
 
-    var ts: Array[Double] = Array()
+    var ts = sc.parallelize(Array[Double]())
     if (LENGTH > 0) {
-      ts = Array.ofDim[Double](LENGTH)
-      var i = 0;
-      var ofsCnt = 1;
-      val iter = scala.io.Source.fromFile(FILE).getLines()
-      while (ofsCnt < OFFSET) {
-        ofsCnt += 1
-        if (iter.hasNext) {
-          val line = iter.next()
-        } else {
-          System.out.println("Not enough lines in " + FILE);
-          exit
-        }
-      }
-      while (i < LENGTH) {
-        if (iter.hasNext) {
-          ts(i) = iter.next().toDouble
-        } else {
-          System.out.println("Not enough lines in " + FILE);
-          exit
-        }
-        i += 1
-      }
+      ts = sc.textFile(FILE)
+        .zipWithIndex()
+        .filter(x => x._2 >= OFFSET && x._2 < OFFSET + LENGTH)
+        .map(x => x._1.toDouble)
     } else {
-      ts = scala.io.Source.fromFile(FILE)
-        .getLines()
-        .toArray
-        .map(_.toDouble)
+      ts = sc.textFile(FILE)
+        .map(x => x.toDouble)
     }
 
-    val bcseqs = sc.broadcast(ts)
+    val bcseqs = sc.broadcast(ts.collect())
     val dh = new DataOfBroadcast(bcseqs, SLIDING_WINDOW_SIZE)
 
-    val discords = pdd(sc.parallelize(ts), SLIDING_WINDOW_SIZE, PARTITION_SIZE, dh, sc, REPORT_NUM, BATCH)
+    val discords = pdd(ts, SLIDING_WINDOW_SIZE, PARTITION_SIZE, dh, sc, REPORT_NUM, BATCH, ESTIMATION)
 
     val end = new Date();
 
@@ -174,7 +160,8 @@ object PDD {
           dh: DataOfBroadcast,
           sc: SparkContext,
           reportNum: Int,
-          batch: Int): Array[Sequence] = {
+          batch: Int,
+          estimation: Int): Array[Sequence] = {
 
     val partitioner = new ExactPartitioner(partSize, inputData.count - winSize + 1)
     val bcseqs = sc.broadcast(inputData)
@@ -197,7 +184,7 @@ object PDD {
       .flatMap { x => x }
       .map(_.asInstanceOf[Long])
       .zipWithIndex()
-      .filter(_._2 < 1000)
+      .filter(_._2 < estimation)
       .map(_._1.asInstanceOf[java.lang.Long])
       .collect
 
@@ -252,7 +239,7 @@ object PDD {
           .map { _._1 }
       }
 
-      logger.info("Before:\t" + q.map(_._2.numSeqs()).collect().mkString("\t"))
+      //      logger.info("Before:\t" + q.map(_._2.numSeqs()).collect().mkString("\t"))
 
       // detect discord from each chunks of q
       val opandres = indices.zipWithIndex()
@@ -267,7 +254,7 @@ object PDD {
 
       q = opandres.map(_._1)
 
-      if (tempResult.count() > 0) {
+      if (!tempResult.isEmpty()) {
         val discord = tempResult
           .flatMap { x => x }
           .reduce((x, y) => (if (x.dist > y.dist) x else y))
@@ -287,7 +274,7 @@ object PDD {
       q = q.map(x => ((x._1 + 1) % partSize, x._2))
         .sortBy(_._1)
 
-      assert(q.count() == partSize, "The size of the queue is " + q.count() + ", which is not the same as partitionSize")
+      //      assert(q.count() == partSize, "The size of the queue is " + q.count() + ", which is not the same as partitionSize")
 
       numSeqsInQ = q.map(_._2.numSeqs())
         .reduce(_ + _)

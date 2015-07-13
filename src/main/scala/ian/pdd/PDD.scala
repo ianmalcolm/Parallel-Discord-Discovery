@@ -35,9 +35,9 @@ object PDD {
     var master = ""
     var FILE = ""
     var SLIDING_WINDOW_SIZE = 100
+    var PARTITION_SIZE = 4
     var OFFSET = 0
     var LENGTH = -1
-    var CPI = 100
     var BATCH = 1000
     var REPORT_NUM = 1
     var ESTIMATION = 1000
@@ -49,8 +49,8 @@ object PDD {
       options.addOption("ofs", true, "Set the offset of the dataset, defalut is 0");
       options.addOption("len", true, "Set the length of dataset, -1 for using the entire dataset, default is -1");
       options.addOption("win", true, "The size of sliding window");
+      options.addOption("par", true, "The size of partition");
       options.addOption("bat", true, "The size of batch");
-      options.addOption("cpi", true, "The number of chunks per index");
       options.addOption("rep", true, "The number of reported discords");
       options.addOption("est", true, "The number of seqs involved in estimation");
       options.addOption("mst", true, "The configuration of master");
@@ -77,12 +77,11 @@ object PDD {
       if (cmd.hasOption("win")) {
         SLIDING_WINDOW_SIZE = Integer.parseInt(cmd.getOptionValue("win"));
       }
-
+      if (cmd.hasOption("par")) {
+        PARTITION_SIZE = Integer.parseInt(cmd.getOptionValue("par"));
+      }
       if (cmd.hasOption("bat")) {
         BATCH = Integer.parseInt(cmd.getOptionValue("bat"));
-      }
-      if (cmd.hasOption("cpi")) {
-        CPI = Integer.parseInt(cmd.getOptionValue("cpi"));
       }
       if (cmd.hasOption("rep")) {
         REPORT_NUM = Integer.parseInt(cmd.getOptionValue("rep"));
@@ -118,8 +117,8 @@ object PDD {
         + " -ofs " + OFFSET
         + " -len " + LENGTH
         + " -win " + SLIDING_WINDOW_SIZE
+        + " -par " + PARTITION_SIZE
         + " -bat " + BATCH
-        + " -cpi " + CPI
         + " -est " + ESTIMATION
         + " -rep " + REPORT_NUM
         + (if (cmd.hasOption("mst")) " -mst " + cmd.getOptionValue("mst") else ""));
@@ -144,18 +143,20 @@ object PDD {
     val bcseqs = sc.broadcast(ts.collect())
     val dh = new DataOfBroadcast(bcseqs, SLIDING_WINDOW_SIZE)
 
-    val discords = pdd(ts, dh, sc, REPORT_NUM, BATCH, ESTIMATION, CPI)
+    val discords = pdd(ts, SLIDING_WINDOW_SIZE, PARTITION_SIZE, dh, sc, REPORT_NUM, BATCH, ESTIMATION)
 
     val end = new Date();
 
     for (seq <- discords) {
       println("Top Discord: " + seq.id + "\tdist: " + seq.dist)
     }
-    println("Total time elapsed: " + (end.getTime() - start.getTime()) / 1000.0);
+    println("Total time elapsed: " + (end.getTime() - start.getTime()) / 1000);
 
   }
 
   def pdd(inputData: RDD[Double],
+          winSize: Int,
+          partSize: Int,
           dh: DataOfBroadcast,
           sc: SparkContext,
           reportNum: Int,
@@ -163,80 +164,146 @@ object PDD {
           estimation: Int,
           cpi: Int = 10): Array[Sequence] = {
 
-    val index = new Index(8, 4)
-    for (i <- 0 until dh.size().toInt) {
-      index.add(dh.get(i), i)
-    }
-    val bcIndex = sc.broadcast(index)
+    val partitioner = new ExactPartitioner(partSize, inputData.count - winSize + 1)
+    val bcseqs = sc.broadcast(inputData)
 
-    var gBSFDiscord = new Sequence(0);
-    {
-      val chunk = index.leafIterator()
-        .toArray
-        .map { x => (x.getLoad, x.getIDList.toArray) }
-        .sortBy(_._2.size)
-        .map(x => x._2)
-        .flatMap(x => x)
-        .take(estimation)
-        .map(_.asInstanceOf[java.lang.Long])
+    val ci = new CreateIndex(dh)
 
-      val estdiscord = new NNSearch(dh, chunk, bcIndex).globSearch()
+    val indices = inputData
+      .sliding(winSize)
+      .zipWithIndex()
+      .map { x => (x._2, x._1) }
+      .partitionBy(partitioner)
+      .mapPartitions(ci.call, false)
 
-      logger.warn("Estimated Seqs: " + chunk.size + "\tID: " + estdiscord.id + "\tNeighbor: " + estdiscord.neighbor + "\tDist: " + estdiscord.dist)
+    val chunk = indices.map { _.leafIterator().toArray }
+      .flatMap { x => x }
+      .map { x => (x.getLoad, x.getIDList.toArray) }
+      .reduceByKey(_ ++ _)
+      .sortBy(_._2.size)
+      .map(x => x._2)
+      .flatMap { x => x }
+      .map(_.asInstanceOf[Long])
+      .zipWithIndex()
+      .filter(_._2 < estimation)
+      .map(_._1.asInstanceOf[java.lang.Long])
+      .collect
 
-      gBSFDiscord = estdiscord
-      logger.warn("\t\tBSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
-    }
+    var list = sc.parallelize(0 until dh.size().toInt)
+      .map { _.toLong }
 
-    var list = 0 until dh.size().toInt
+    val discord = indices.map { x => new NNSearch(dh, chunk).globSearch(x) }
+      .flatMap { x => x }
+      .map(x => (x.id, x))
+      .reduceByKey((x, y) => (if (x.dist < y.dist) x else y))
+      .map(x => x._2)
+      .reduce((x, y) => (if (x.dist > y.dist) x else y))
 
-    var numCalls = 0l
+    logger.warn("Estimated Seqs: " + chunk.size + "\tID: " + discord.id + "\tNeighbor: " + discord.neighbor + "\tDist: " + discord.dist)
 
-    while (list.size > 0) {
+    var gBSFDiscord: Sequence = discord
+    logger.warn("\t\tBSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
 
-      // create chunks for filling up
-      val loads = list.take((cpi * batch).toInt)
-        .zipWithIndex
-        .map { x => (x._2 / batch, x._1) }
-        .groupBy(_._1)
-        .mapValues(_.map(_._2.toLong).toArray)
-        .map(x => x._2.map(_.asInstanceOf[java.lang.Long]))
-        .toArray
+    var q = sc.parallelize(new Array[NNSearch](partSize * cpi))
+      .map { x => new NNSearch(dh, new Array[java.lang.Long](0), gBSFDiscord.dist, partSize) }
+      .zipWithIndex()
+      .map(x => (x._2, x._1))
 
-      val q = sc.parallelize(loads)
-        .map(x => new NNSearch(dh, bcIndex, x, gBSFDiscord.dist))
+    var numSeqsInQ = q.map(x => x._2.numSeqs())
+      .reduce(_ + _)
+    var numSeqsInList = list.count
+
+    while (numSeqsInQ + numSeqsInList > 0) {
+
+      val qIdle = q.filter(_._2.numSeqs() < batch)
         .zipWithIndex()
-        .map(x=>(x._2,x._1))
-        .partitionBy(new BalancedPartitioner(loads.size))
-        .map(_._2)
+        .map(x => (x._2, x._1))
 
-      // fill the empty slot of q with the chunks
-      list = list.drop((cpi * batch).toInt)
+      val numIdle = qIdle.count
+      if (numIdle > 0 && numSeqsInList > 0) {
 
-      val opandres = q.map(x => discovery(x))
+        // create chunks for filling up
+        val qReloads = list.zipWithIndex()
+          .filter(_._2 < numIdle * batch)
+          .map { x => (x._2 / batch, x._1) }
+          .groupByKey
+          .rightOuterJoin(qIdle)
+          .filter(x => !x._2._1.isEmpty)
+          .map(x => (x._2._2._1, reload(x._2._1.get, x._2._2._2)))
 
-      val curDiscord = opandres.map(_._2)
-        .reduce((x, y) => (if (x.dist > y.dist) x else y))
+        // fill the empty slot of q with the chunks
+        q = q.++(qReloads)
+          .reduceByKey((x, y) => (if (x.numSeqs() > y.numSeqs()) x else y))
+          .sortBy(_._1)
 
-      numCalls += opandres.map(_._1).reduce(_ + _)
-      
-      // update best so far distance
-      if (gBSFDiscord.dist < curDiscord.dist) {
-        gBSFDiscord = curDiscord
-        logger.warn("BSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
+        list = list.zipWithIndex()
+          .filter(_._2 >= numIdle * batch)
+          .map { _._1 }
       }
 
-      logger.info("numSeqs:\t" + (list.size))
+      //      logger.info("Before:\t" + q.map(_._2.numSeqs()).collect().mkString("\t"))
+
+      val qDispatched = q.map(x => (x._1 / cpi, x))
+
+//      println(qDispatched.map(x => x._1).collect().mkString("\t"))
+//      assert(qDispatched.count() == partSize * cpi)
+
+      // detect discord from each chunks of q
+      val opandres = indices.zipWithIndex()
+        .map(x => (x._2, x._1))
+        .rightOuterJoin(qDispatched)
+        .map(x => discovery(x._1, x._2._1.get, x._2._2))
+
+      // val opandres: RDD[(Long, (Option[Index], (Long, NNSearch)))]
+
+      //      logger.debug("After:\t" + q.map(_._2.numSeqs()).collect().mkString("\t"))
+
+      val tempResult = opandres.map(_._2)
+        .filter { _.size > 0 }
+
+      q = opandres.map(_._1)
+
+//      println(q.map(x => x._1).collect().mkString("\t"))
+//      assert(q.count() == partSize * cpi)
+
+      if (!tempResult.isEmpty()) {
+        val discord = tempResult
+          .flatMap { x => x }
+          .reduce((x, y) => (if (x.dist > y.dist) x else y))
+
+        logger.warn("ID: " + discord.id + "\tNeighbor: " + discord.neighbor + "\tDist: " + discord.dist)
+
+        // update best so far distance
+        if (gBSFDiscord.dist < discord.dist) {
+          gBSFDiscord = discord
+          q = q.map(x => (gBSFDiscord.dist, x))
+            .map(x => updateQWithRange(x._2._1, x._2._2, x._1))
+          logger.warn("BSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
+        }
+      }
+
+      // rotate q
+      q = q.map(x => ((x._1 + cpi) % (partSize * cpi), x._2))
+        .sortBy(_._1)
+
+      //      assert(q.count() == partSize, "The size of the queue is " + q.count() + ", which is not the same as partitionSize")
+
+      numSeqsInQ = q.map(_._2.numSeqs())
+        .reduce(_ + _)
+      numSeqsInList = list.count
+
+      logger.info("numSeqs:\t" + (numSeqsInQ + numSeqsInList) + "\t numRemainings:\t" + q.map(_._2.numSeqs()).collect().mkString("\t"))
     }
 
+    val numCalls = q.map { x => x._2.dfCnt }.reduce(_ + _)
     logger.warn("Number of calls to distance function: " + numCalls)
     Array[Sequence](gBSFDiscord)
 
   }
 
-  def discovery(nns: NNSearch): (Long, Sequence) = {
-    val result = nns.localSearch()
-    Pair(nns.dfCnt, result)
+  def discovery(id: Long, index: Index, nns: (Long, NNSearch)): ((Long, NNSearch), Array[Sequence]) = {
+    val result = nns._2.localSearch(id.toInt, index)
+    Pair(nns, result)
   }
 
   def updateQWithRange(id: Long, nns: NNSearch, range: Double): (Long, NNSearch) = {
@@ -250,3 +317,20 @@ object PDD {
     nns
   }
 }
+
+class CreateIndex(_dh: DataOfBroadcast) extends java.io.Serializable {
+  val dh = _dh
+  val index = new Index(8, 4)
+
+  def call(seqsIter: Iterator[(Long, Array[Double])]): Iterator[Index] = {
+
+    while (seqsIter.hasNext) {
+      val seq = seqsIter.next()
+      index.add(dh.getViaIterator(seq._2), seq._1)
+    }
+
+    val indexlist = List(index)
+    indexlist.iterator
+  }
+}
+

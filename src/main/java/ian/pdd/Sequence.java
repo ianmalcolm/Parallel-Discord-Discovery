@@ -2,11 +2,11 @@ package ian.pdd;
 
 import java.util.HashSet;
 
-class Sequence implements java.io.Serializable {
+class Sequence implements Comparable<Sequence>, java.io.Serializable {
 	/**
 	 * 
 	 */
-	final long id;
+	long id;
 	double dist = Double.POSITIVE_INFINITY;
 	long neighbor = Long.MIN_VALUE;
 	HashSet<Integer> partCnt = new HashSet<Integer>();
@@ -32,6 +32,16 @@ class Sequence implements java.io.Serializable {
 
 	public String toString() {
 		return id + "\t" + neighbor + "\t" + dist;
+	}
+
+	public int compareTo(Sequence t) {
+		if (dist > t.dist) {
+			return 1;
+		} else if (dist < t.dist) {
+			return -1;
+		} else {
+			return 0;
+		}
 	}
 
 }

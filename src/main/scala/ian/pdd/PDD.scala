@@ -19,6 +19,8 @@ import scala.collection.mutable
 import ian.ISAXIndex._
 import java.util.Date
 import java.util.ArrayList
+import java.text._
+import java.math._
 
 /**
  * @author ${user.name}
@@ -190,7 +192,7 @@ object PDD {
 
     var list = 0 until dh.size().toInt
 
-    var numCalls = 0l
+    var numCalls: Double = 0.0
 
     while (list.size > 0) {
 
@@ -206,7 +208,7 @@ object PDD {
       val q = sc.parallelize(loads)
         .map(x => new NNSearch(dh, bcIndex, x, gBSFDiscord.dist))
         .zipWithIndex()
-        .map(x=>(x._2,x._1))
+        .map(x => (x._2, x._1))
         .partitionBy(new BalancedPartitioner(loads.size))
         .map(_._2)
 
@@ -214,22 +216,26 @@ object PDD {
       list = list.drop((cpi * batch).toInt)
 
       val opandres = q.map(x => discovery(x))
-
-      val curDiscord = opandres.map(_._2)
-        .reduce((x, y) => (if (x.dist > y.dist) x else y))
+        .collect
 
       numCalls += opandres.map(_._1).reduce(_ + _)
-      
-      // update best so far distance
-      if (gBSFDiscord.dist < curDiscord.dist) {
-        gBSFDiscord = curDiscord
-        logger.warn("BSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
+      val curResult = opandres.map(_._2)
+        .filter { _ != null }
+
+      if (curResult.size > 0) {
+        val curDiscord = curResult.reduce((x, y) => (if (x.dist > y.dist) x else y))
+        // update best so far distance
+        if (gBSFDiscord.dist < curDiscord.dist) {
+          gBSFDiscord = curDiscord
+          logger.warn("BSFDiscord: " + gBSFDiscord.id + "\tdist: " + gBSFDiscord.dist)
+        }
       }
 
       logger.info("numSeqs:\t" + (list.size))
     }
 
-    logger.warn("Number of calls to distance function: " + numCalls)
+    val formatter: NumberFormat = new DecimalFormat("0.###E0")
+    logger.warn("Number of calls to distance function: " + formatter.format(numCalls))
     Array[Sequence](gBSFDiscord)
 
   }

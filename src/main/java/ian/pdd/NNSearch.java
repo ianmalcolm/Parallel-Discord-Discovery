@@ -37,6 +37,7 @@ public class NNSearch implements java.io.Serializable {
 
 	public Sequence localSearch() {
 		Sequence result = seqs.get(0);
+		result.set(Long.MIN_VALUE, Double.NEGATIVE_INFINITY);
 
 		for (Sequence seq : seqs) {
 
@@ -47,12 +48,16 @@ public class NNSearch implements java.io.Serializable {
 				selfExcept.add(overlap);
 			}
 
-			ArrayList<Long> knn = bcIndex.value().knn(dh.get(seq.id), 1, dh,
-					selfExcept, range);
-			double dist = bcIndex.value().df.distance(dh.get(seq.id),
-					dh.get(knn.get(0)));
+			ArrayList<Sequence> knn = bcIndex.value().knn(dh.get(seq.id), 1,
+					dh, selfExcept, range);
 
-			seq.set(knn.get(0), dist);
+			if (knn == null) {
+				continue;
+			}
+
+			assert knn.size() > 0;
+			seq.set(knn.get(0).neighbor, knn.get(0).dist);
+
 			if (result.dist < seq.dist) {
 				result = seq;
 			}
@@ -75,11 +80,12 @@ public class NNSearch implements java.io.Serializable {
 				selfExcept.add(overlap);
 			}
 
-			ArrayList<Long> knn = bcIndex.value().knn(dh.get(seq.id), 1, dh,
-					selfExcept);
-			double dist = bcIndex.value().df.distance(dh.get(seq.id),
-					dh.get(knn.get(0)));
-			seq.set(knn.get(0), dist);
+			ArrayList<Sequence> knn = bcIndex.value().knn(dh.get(seq.id), 1,
+					dh, selfExcept, Double.NEGATIVE_INFINITY);
+
+			assert knn != null && knn.size() > 0;
+
+			seq.set(knn.get(0).neighbor, knn.get(0).dist);
 			if (result.dist < seq.dist) {
 				result = seq;
 			}

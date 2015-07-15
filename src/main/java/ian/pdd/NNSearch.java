@@ -33,10 +33,10 @@ public class NNSearch implements java.io.Serializable {
 	}
 
 	public Sequence[] localSearch(int partId, Index index) {
+
 		ArrayList<Sequence> discard = new ArrayList<Sequence>();
 		ArrayList<Sequence> result = new ArrayList<Sequence>();
 
-		// for (int h = 0; h < localDiscord.length; h++) {
 		for (Sequence seq : seqs) {
 
 			if (seq.dist < range) {
@@ -50,19 +50,22 @@ public class NNSearch implements java.io.Serializable {
 					+ dh.windowSize(); overlap++) {
 				selfExcept.add(overlap);
 			}
+			ArrayList<Sequence> knn = index.knn(dh.get(seq.id), 1, dh,
+					selfExcept, range);
 
-			ArrayList<Long> knn = index.knn(dh.get(seq.id), 1, dh, selfExcept,
-					range);
-			double dist = index.df.distance(dh.get(seq.id), dh.get(knn.get(0)));
-			seq.partCnt.add(partId);
-
-			if (seq.dist > dist) {
-				seq.set(knn.get(0), dist);
+			if (knn == null) {
+				discard.add(seq);
+				continue;
+			}
+			if (seq.dist > knn.get(0).dist) {
+				seq.set(knn.get(0).neighbor, knn.get(0).dist);
 			}
 			if (seq.dist < range) {
 				discard.add(seq);
 				continue;
-			} else if (seq.partCnt.size() == partitionSize) {
+			}
+			seq.partCnt.add(partId);
+			if (seq.partCnt.size() == partitionSize) {
 				result.add(seq);
 				discard.add(seq);
 			}
@@ -87,13 +90,17 @@ public class NNSearch implements java.io.Serializable {
 				selfExcept.add(overlap);
 			}
 
-			ArrayList<Long> knn = index.knn(dh.get(seq.id), 1, dh, selfExcept);
-			seq.set(knn.get(0),
-					index.df.distance(dh.get(seq.id), dh.get(knn.get(0))));
-			// System.out.println(result[num - 1].toString());
+			ArrayList<Sequence> knn = index.knn(dh.get(seq.id), 1, dh,
+					selfExcept, Double.NEGATIVE_INFINITY);
+
+			assert knn != null;
+			seq.set(knn.get(0).neighbor,
+					index.df.distance(dh.get(seq.id),
+							dh.get(knn.get(0).neighbor)));
 
 		}
 
+		dfCnt += index.df.getCount();
 		return seqs.toArray(new Sequence[seqs.size()]);
 	}
 

@@ -9,7 +9,7 @@ import ian.ISAXIndex.Distance;
 
 /**
  *
- * @author ian
+ * @author Pavel Senin
  */
 public class ED extends Distance {
 
